@@ -9,6 +9,7 @@ import yfinance as yf
 from fpdf import FPDF
 import warnings
 import logging
+from pandas_market_calendars import get_calendar
 from empyrical import (
     cagr,
     cum_returns,
@@ -142,9 +143,12 @@ class Engine:
 
 
 def get_returns(stocks, wts, start_date, end_date=TODAY):
+    nyse_calendar = get_calendar('NYSE')
+    trading_days = nyse_calendar.schedule(start_date=start_date, end_date=end_date)
+    end_date = (dt.datetime.strptime(end_date, "%Y-%m-%d").date() + dt.timedelta(days=1)).strftime("%Y-%m-%d")
     if len(stocks) > 1:
         assets = yf.download(stocks, start=start_date, end=end_date, progress=False)["Adj Close"]
-        assets = assets.filter(stocks)
+        assets = assets.loc[trading_days.index, stocks]
         initial_alloc = wts/assets.iloc[0]
         if initial_alloc.isna().any():
             raise ValueError("Some stock is not available at initial state!")
@@ -153,7 +157,7 @@ def get_returns(stocks, wts, start_date, end_date=TODAY):
         return returns
     else:
         df = yf.download(stocks, start=start_date, end=end_date, progress=False)["Adj Close"]
-        df = pd.DataFrame(df)
+        df = pd.DataFrame(df).loc[trading_days.index]
         returns = df.pct_change()[1:]
         return returns
 
@@ -171,7 +175,7 @@ def get_returns_from_data(data, wts, stocks):
 def calculate_information_ratio(returns, benchmark_returns, days=252) -> float:
     return_difference = returns - benchmark_returns
     volatility = return_difference.std() * np.sqrt(days)
-    information_ratio_result = return_difference.mean() / volatility
+    information_ratio_result = return_difference.mean() / volatility # seems not good, this ratio is the daily mean divided by the annual std, which doesn't make sense to me
     return information_ratio_result
 
 
@@ -229,7 +233,8 @@ def empyrial(my_portfolio, rf=0.0, sigma_value=1, confidence_value=0.95, report=
             )
 
             # then append those returns
-            returns = returns.append(add_returns)
+            # returns = returns.append(add_returns)
+            returns = pd.concat([returns, add_returns])
     else:
       if not my_portfolio.data.empty:
               returns = get_returns_from_data(my_portfolio.data, my_portfolio.weights, my_portfolio.portfolio)
@@ -315,12 +320,12 @@ def empyrial(my_portfolio, rf=0.0, sigma_value=1, confidence_value=0.95, report=
     )
     benchmark = benchmark.dropna()
     
-    CAGR = cagr(returns, period='daily', annualization=None)
+    CAGR = cagr(returns, period='daily', annualization=None) # a scalar value, annualized total return
     # CAGR = round(CAGR, 2)
     # CAGR = CAGR.tolist()
     CAGR = str(round(CAGR * 100, 2)) + "%"
 
-    CUM = cum_returns(returns, starting_value=0, out=None) * 100
+    CUM = cum_returns(returns, starting_value=0, out=None) * 100 # a cumulative return series, in percentage
     CUM = CUM.iloc[-1]
     CUM = CUM.tolist()
     CUM = str(round(CUM, 2)) + "%"
@@ -928,7 +933,7 @@ def make_rebalance(
 
         try:
             portfolio = Engine(
-                start_date=dates[0],
+                start_date=dates[i],
                 end_date=dates[i + 1],
                 portfolio=portfolio_input,
                 weights=allocation,
@@ -943,7 +948,7 @@ def make_rebalance(
 
         except TypeError:
             portfolio = Engine(
-                start_date=dates[0],
+                start_date=dates[i],
                 end_date=dates[i + 1],
                 portfolio=portfolio_input,
                 weights=allocation,
@@ -957,37 +962,6 @@ def make_rebalance(
             )
 
         output_df["{}".format(dates[i + 1])] = portfolio.weights
-
-    # we have to run it one more time to get what the optimization is for up to today's date
-    try:
-        portfolio = Engine(
-            start_date=dates[0],
-            portfolio=portfolio_input,
-            weights=allocation,
-            optimizer="{}".format(optimize),
-            max_vol=vol_max,
-            diversification=div,
-            min_weights=min,
-            max_weights=max,
-            expected_returns=expected_returns,
-            risk_model=risk_model,
-        )
-
-    except TypeError:
-        portfolio = Engine(
-            start_date=dates[0],
-            portfolio=portfolio_input,
-            weights=allocation,
-            optimizer=optimize,
-            max_vol=vol_max,
-            diversification=div,
-            min_weights=min,
-            max_weights=max,
-            expected_returns=expected_returns,
-            risk_model=risk_model,
-        )
-
-    output_df["{}".format(TODAY)] = portfolio.weights
 
     make_rebalance.output = output_df
     print("Rebalance schedule: ")
